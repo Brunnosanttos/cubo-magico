@@ -78,12 +78,26 @@ interface Cubie {
 function createScene(mount: HTMLElement) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-  const initialSize = mount.getBoundingClientRect()
-  renderer.setSize(initialSize.width, initialSize.height || 320)
+
+  // Pick a non-zero initial size — iOS Safari sometimes reports 0 for the
+  // host element until layout completes, which would leave us with a 0x0
+  // canvas that never recovers if the ResizeObserver fires before paint.
+  const measure = () => {
+    const r = mount.getBoundingClientRect()
+    return {
+      w: Math.max(r.width || mount.clientWidth || 320, 200),
+      h: Math.max(r.height || mount.clientHeight || 320, 200),
+    }
+  }
+  let { w, h } = measure()
+  renderer.setSize(w, h)
+  renderer.domElement.style.display = 'block'
+  renderer.domElement.style.width = '100%'
+  renderer.domElement.style.height = '100%'
   mount.appendChild(renderer.domElement)
 
   const scene = new THREE.Scene()
-  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100)
+  const camera = new THREE.PerspectiveCamera(38, w / h, 0.1, 100)
   camera.position.set(5, 5, 6.5)
   camera.lookAt(0, 0, 0)
 
@@ -189,13 +203,22 @@ function createScene(mount: HTMLElement) {
   loop()
 
   const ro = new ResizeObserver(() => {
-    const { width, height } = mount.getBoundingClientRect()
-    const h = height || width * 0.75
-    renderer.setSize(width, h)
-    camera.aspect = width / h
+    const next = measure()
+    w = next.w
+    h = next.h
+    renderer.setSize(w, h)
+    camera.aspect = w / h
     camera.updateProjectionMatrix()
   })
   ro.observe(mount)
+  // Force one more resize after the first paint — iOS Safari sometimes does
+  // not fire the initial ResizeObserver callback in the right phase.
+  requestAnimationFrame(() => {
+    const next = measure()
+    renderer.setSize(next.w, next.h)
+    camera.aspect = next.w / next.h
+    camera.updateProjectionMatrix()
+  })
 
   function dispose() {
     cancelAnimationFrame(raf)

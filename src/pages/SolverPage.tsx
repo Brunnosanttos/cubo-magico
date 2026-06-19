@@ -1,8 +1,29 @@
-import { useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Cube3D } from '@/components/Cube3D'
 import { SolutionControls } from '@/components/SolutionControls'
 import { Button } from '@/components/Button'
 import { useAppStore } from '@/stores/cubeStore'
+
+class CubeErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+  componentDidCatch(error: Error) {
+    // eslint-disable-next-line no-console
+    console.error('Cube3D crash:', error)
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex h-full w-full items-center justify-center p-6 text-center text-sm text-rose-200">
+          Falha ao renderizar o cubo 3D. {this.state.error.message}
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 const STEP_INTERVAL = 900
 
@@ -63,14 +84,19 @@ export function SolverPage() {
         </Button>
       </header>
 
-      <div className="relative aspect-square w-full overflow-hidden rounded-3xl bg-gradient-to-br from-slate-800 to-slate-950">
-        <Cube3D
-          state={cube}
-          moves={moves}
-          playStep={step}
-          animating={animating}
-          onAnimationEnd={handleAnimationEnd}
-        />
+      <div
+        className="relative w-full overflow-hidden rounded-3xl bg-gradient-to-br from-slate-800 to-slate-950"
+        style={{ height: 'min(85vw, 420px)' }}
+      >
+        <CubeErrorBoundary>
+          <Cube3D
+            state={cube}
+            moves={moves}
+            playStep={step}
+            animating={animating}
+            onAnimationEnd={handleAnimationEnd}
+          />
+        </CubeErrorBoundary>
       </div>
 
       <div className="mt-4 flex-1">
