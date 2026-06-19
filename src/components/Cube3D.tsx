@@ -40,6 +40,15 @@ export function Cube3D({ state, moves, playStep, animating, autoRotate, onAnimat
   const apiRef = useRef<ReturnType<typeof createScene> | null>(null)
   /** Index of the move that's already baked into the cubies' visual state. */
   const visualStepRef = useRef(0)
+  /**
+   * Latest onAnimationEnd in a ref so changes to the parent's callback don't
+   * retrigger the animation effect — that was causing animateMove() to be
+   * called a second time mid-animation and the playback to loop.
+   */
+  const onAnimationEndRef = useRef(onAnimationEnd)
+  useEffect(() => {
+    onAnimationEndRef.current = onAnimationEnd
+  }, [onAnimationEnd])
 
   // Mount the Three.js scene once.
   useEffect(() => {
@@ -90,19 +99,19 @@ export function Cube3D({ state, moves, playStep, animating, autoRotate, onAnimat
     if (!animating) return
     const next = moves[visualStepRef.current]
     if (!next) {
-      onAnimationEnd?.()
+      onAnimationEndRef.current?.()
       return
     }
     let cancelled = false
     api.animateMove(next, 600).then(() => {
       if (cancelled) return
       visualStepRef.current += 1
-      onAnimationEnd?.()
+      onAnimationEndRef.current?.()
     })
     return () => {
       cancelled = true
     }
-  }, [animating, moves, onAnimationEnd])
+  }, [animating, moves])
 
   // Toggle the idle spin.
   useEffect(() => {
