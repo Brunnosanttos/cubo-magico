@@ -8,6 +8,7 @@ import { SCAN_ORDER } from '@/types/cube'
 import type { CubeColor, FaceName, Facelets } from '@/types/cube'
 import { validateCube } from '@/services/cubeValidation/validator'
 import { solveFacelets } from '@/services/cubeSolver/cubeSolver'
+import { useSolverReady } from '@/hooks/useSolverReady'
 
 export function ScannerPage() {
   const cube = useAppStore((s) => s.cube)
@@ -25,6 +26,7 @@ export function ScannerPage() {
   const [solving, setSolving] = useState(false)
   const [validationMsg, setValidationMsg] = useState<string | null>(null)
   const [suspectFaces, setSuspectFaces] = useState<FaceName[]>([])
+  const solverReady = useSolverReady()
 
   const currentFace: FaceName | null = scanIndex < SCAN_ORDER.length ? SCAN_ORDER[scanIndex] : null
   const allScanned = useMemo(
@@ -126,9 +128,23 @@ export function ScannerPage() {
             📷 Escanear {currentFace ? `face ${currentFace}` : ''}
           </Button>
         ) : (
-          <Button onClick={handleSolve} disabled={solving}>
-            {solving ? 'Resolvendo…' : 'Resolver Cubo'}
-          </Button>
+          <>
+            <Button onClick={handleSolve} disabled={solving}>
+              {solving ? (
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-900/40 border-t-slate-900" />
+                  Resolvendo…
+                </span>
+              ) : (
+                'Resolver Cubo'
+              )}
+            </Button>
+            {!solverReady && (
+              <p className="text-center text-xs text-slate-400">
+                Preparando o solver (primeira vez leva alguns segundos)…
+              </p>
+            )}
+          </>
         )}
       </div>
     </div>
