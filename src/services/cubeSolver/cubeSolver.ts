@@ -26,7 +26,8 @@ interface Pending {
 }
 const pending = new Map<number, Pending>()
 
-const SOLVE_TIMEOUT_MS = 15_000
+const SOLVE_TIMEOUT_MS = 10_000
+const INIT_TIMEOUT_MS = 45_000
 
 function getWorker(): Worker {
   if (worker) return worker
@@ -125,7 +126,7 @@ export function onSolverReady(listener: (ready: boolean) => void): () => void {
 
 export function ensureSolverReady(): Promise<void> {
   if (initPromise) return initPromise
-  initPromise = call<void>('init')
+  initPromise = call<void>('init', undefined, INIT_TIMEOUT_MS)
     .then(() => {
       solverReady = true
       for (const l of readyListeners) l(true)
@@ -143,6 +144,18 @@ export class ImpossibleCubeError extends Error {
     super(message)
     this.name = 'ImpossibleCubeError'
   }
+}
+
+/**
+ * Hard-cancel any in-flight init or solve. The current worker is terminated
+ * (cubejs's solve is synchronous and cannot be interrupted any other way)
+ * and the next call boots a fresh one.
+ */
+export function abortSolver(reason = 'cancelado pelo usuário') {
+  const err = new Error(reason) as Error & { code: string }
+  err.code = 'aborted'
+  failAllPending(err)
+  resetWorker()
 }
 
 export async function solveFacelets(facelets: string): Promise<Move[]> {

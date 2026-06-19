@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CameraView } from '@/components/CameraView'
 import { FacePreview } from '@/components/FacePreview'
 import { ScanProgress } from '@/components/ScanProgress'
@@ -11,7 +11,12 @@ import {
   validateCube,
   type ValidationResult,
 } from '@/services/cubeValidation/validator'
-import { ImpossibleCubeError, solveFacelets } from '@/services/cubeSolver/cubeSolver'
+import {
+  ImpossibleCubeError,
+  abortSolver,
+  ensureSolverReady,
+  solveFacelets,
+} from '@/services/cubeSolver/cubeSolver'
 import { useSolverReady } from '@/hooks/useSolverReady'
 
 export function ScannerPage() {
@@ -27,9 +32,29 @@ export function ScannerPage() {
   const setSolverError = useAppStore((s) => s.setSolverError)
 
   const [cameraOpen, setCameraOpen] = useState(true)
-  const [solving, setSolving] = useState(false)
+  const [solving, setSolving] = useState<null | 'init' | 'solve'>(null)
+  const [elapsedMs, setElapsedMs] = useState(0)
   const [error, setError] = useState<ValidationResult | null>(null)
   const solverReady = useSolverReady()
+  const tickRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!solving) {
+      setElapsedMs(0)
+      if (tickRef.current) {
+        window.clearInterval(tickRef.current)
+        tickRef.current = null
+      }
+      return
+    }
+    const start = performance.now()
+    tickRef.current = window.setInterval(() => {
+      setElapsedMs(performance.now() - start)
+    }, 100)
+    return () => {
+      if (tickRef.current) window.clearInterval(tickRef.current)
+    }
+  }, [solving])
 
   const currentFace: FaceName | null = scanIndex < SCAN_ORDER.length ? SCAN_ORDER[scanIndex] : null
   const allScanned = useMemo(
@@ -53,21 +78,24 @@ export function ScannerPage() {
   }
 
   async function handleSolve() {
-    setSolving(true)
     setError(null)
     const result = validateCube(cube)
     if (!result.ok || !result.facelets) {
       setError(result)
-      setSolving(false)
       return
     }
     try {
+      setSolving('init')
+      await ensureSolverReady()
+      setSolving('solve')
       const moves = await solveFacelets(result.facelets)
       setSolution(moves)
       setSolverError(null)
       setRoute('solver')
     } catch (err: any) {
-      if (err instanceof ImpossibleCubeError) {
+      if (err?.code === 'aborted') {
+        // User pressed Cancelar — silently bail.
+      } else if (err instanceof ImpossibleCubeError) {
         setError(impossibleStateResult())
       } else {
         setError({
@@ -79,8 +107,13 @@ export function ScannerPage() {
       }
       setSolverError(err?.message ?? null)
     } finally {
-      setSolving(false)
+      setSolving(null)
     }
+  }
+
+  function cancelSolve() {
+    abortSolver()
+    setSolving(null)
   }
 
   if (cameraOpen && currentFace) {
@@ -139,26 +172,53 @@ export function ScannerPage() {
           >
             📷 Escanear {currentFace ? `face ${currentFace}` : ''}
           </Button>
+        ) : solving ? (
+          <SolveStatus phase={solving} elapsedMs={elapsedMs} onCancel={cancelSolve} />
         ) : (
           <>
-            <Button onClick={handleSolve} disabled={solving}>
-              {solving ? (
-                <span className="inline-flex items-center gap-2">
-                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-900/40 border-t-slate-900" />
-                  Resolvendo…
-                </span>
-              ) : (
-                'Resolver Cubo'
-              )}
-            </Button>
+            <Button onClick={handleSolve}>Resolver Cubo</Button>
             {!solverReady && (
               <p className="text-center text-xs text-slate-400">
-                Preparando o solver (primeira vez leva alguns segundos)…
+                Preparando o solver em segundo plano…
               </p>
             )}
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+interface SolveStatusProps {
+  phase: 'init' | 'solve'
+  elapsedMs: number
+  onCancel: () => void
+}
+
+function SolveStatus({ phase, elapsedMs, onCancel }: SolveStatusProps) {
+  const secs = (elapsedMs / 1000).toFixed(1)
+  const headline =
+    phase === 'init' ? 'Preparando o solver…' : 'Resolvendo o cubo…'
+  const hint =
+    phase === 'init'
+      ? 'A tabela de busca leva alguns segundos na primeira vez.'
+      : 'Cubos válidos resolvem em até 2 s — se passar de 10 s, provavelmente as faces foram lidas erradas.'
+  return (
+    <div className="rounded-2xl bg-slate-800/80 p-4">
+      <div className="flex items-center gap-3">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-300/40 border-t-emerald-300" />
+        <div className="flex-1">
+          <div className="text-sm font-semibold">{headline}</div>
+          <div className="text-xs text-slate-400">{hint}</div>
+        </div>
+        <div className="font-mono text-sm text-emerald-300">{secs}s</div>
+      </div>
+      <button
+        onClick={onCancel}
+        className="mt-3 w-full rounded-xl bg-slate-700 px-3 py-2 text-sm font-medium text-slate-100 hover:bg-slate-600"
+      >
+        Cancelar
+      </button>
     </div>
   )
 }

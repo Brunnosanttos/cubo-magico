@@ -25,6 +25,11 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm}'],
+        // New SWs activate without waiting for old tabs to close — otherwise
+        // a deploy with bug fixes is invisible to users with stale installs.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/docs\.opencv\.org\/.*/,
