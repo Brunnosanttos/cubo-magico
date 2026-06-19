@@ -36,6 +36,7 @@ export function SolverPage() {
 
   const [playing, setPlaying] = useState(false)
   const [animating, setAnimating] = useState(false)
+  const [autoRotate, setAutoRotate] = useState(true)
   const timerRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -94,9 +95,21 @@ export function SolverPage() {
             moves={moves}
             playStep={step}
             animating={animating}
+            autoRotate={autoRotate}
             onAnimationEnd={handleAnimationEnd}
           />
         </CubeErrorBoundary>
+
+        <button
+          onClick={() => setAutoRotate((v) => !v)}
+          className="absolute right-3 top-3 rounded-full bg-slate-900/70 px-3 py-1.5 text-xs font-medium text-slate-100 backdrop-blur transition hover:bg-slate-900"
+          aria-label={autoRotate ? 'Pausar rotação automática' : 'Retomar rotação automática'}
+        >
+          {autoRotate ? '⏸ Pausar giro' : '▶ Girar'}
+        </button>
+        <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-slate-900/60 px-3 py-1 text-[10px] uppercase tracking-wide text-slate-300 backdrop-blur">
+          arraste para girar
+        </div>
       </div>
 
       <div className="mt-4 flex-1">

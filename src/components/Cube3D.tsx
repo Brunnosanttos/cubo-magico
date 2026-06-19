@@ -7,10 +7,16 @@ import { buildFaceletString } from '@/services/cubeValidation/validator'
 /**
  * Animated 3D Rubik's cube.
  *
- * Internally the cube is a 3x3x3 grid of "cubie" meshes. To animate a move we
- * group the 9 cubies on the rotating face into a pivot Object3D, animate the
- * pivot's rotation, and once the animation completes we bake the transform
- * back into each cubie and re-snap them to their integer grid coordinates.
+ * The 27 cubies live inside a single rotating Object3D ("cubieGroup"). Each
+ * move animates a temporary pivot containing the 9 cubies of the rotating
+ * layer; after the animation we bake the transform back into each cubie and
+ * snap to integer grid coordinates so the next move starts from a clean
+ * state.
+ *
+ * The component keeps its own cursor of which solution step the visual cube
+ * is currently at, so a parent re-render that only changes `playStep` no
+ * longer triggers a full rebuild + replay (the old code did, which caused a
+ * visible "double move" right after each animation finished).
  */
 
 interface Props {
@@ -21,15 +27,19 @@ interface Props {
   playStep: number
   /** Set to true to animate from playStep → playStep+1. */
   animating: boolean
+  /** Idle auto-rotation of the whole cube. */
+  autoRotate: boolean
   onAnimationEnd?: () => void
 }
 
 const SIZE = 1
 const GAP = 0.04
 
-export function Cube3D({ state, moves, playStep, animating, onAnimationEnd }: Props) {
+export function Cube3D({ state, moves, playStep, animating, autoRotate, onAnimationEnd }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null)
   const apiRef = useRef<ReturnType<typeof createScene> | null>(null)
+  /** Index of the move that's already baked into the cubies' visual state. */
+  const visualStepRef = useRef(0)
 
   // Mount the Three.js scene once.
   useEffect(() => {
@@ -37,34 +47,69 @@ export function Cube3D({ state, moves, playStep, animating, onAnimationEnd }: Pr
     if (!mount) return
     const api = createScene(mount)
     apiRef.current = api
-    return () => api.dispose()
+    return () => {
+      apiRef.current = null
+      api.dispose()
+    }
   }, [])
 
-  // Whenever the cube state or playStep changes, rebuild and fast-forward.
+  // Rebuild only when the underlying scanned cube or full solution changes.
   useEffect(() => {
     const api = apiRef.current
     if (!api) return
     api.rebuild(state)
-    // Replay the first `playStep` moves instantly (no animation).
-    for (let i = 0; i < playStep && i < moves.length; i++) {
-      api.applyMoveInstant(moves[i])
-    }
-  }, [state, playStep, moves])
+    const target = Math.min(Math.max(playStep, 0), moves.length)
+    for (let i = 0; i < target; i++) api.applyMoveInstant(moves[i])
+    visualStepRef.current = target
+    // Intentionally NOT depending on playStep — that drift is handled below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, moves])
 
-  // Animate next move on demand.
+  // Sync to playStep changes without rebuilding (forward = instant apply,
+  // backward = rebuild + replay).
+  useEffect(() => {
+    const api = apiRef.current
+    if (!api) return
+    if (animating) return // animation completion handles forward advancement
+    const target = Math.min(Math.max(playStep, 0), moves.length)
+    if (target === visualStepRef.current) return
+    if (target > visualStepRef.current) {
+      for (let i = visualStepRef.current; i < target; i++) api.applyMoveInstant(moves[i])
+    } else {
+      api.rebuild(state)
+      for (let i = 0; i < target; i++) api.applyMoveInstant(moves[i])
+    }
+    visualStepRef.current = target
+  }, [playStep, animating, moves, state])
+
+  // Animate a single move when `animating` flips on. We always animate the
+  // move that sits just past the current visual step — never two at once.
   useEffect(() => {
     const api = apiRef.current
     if (!api) return
     if (!animating) return
-    const move = moves[playStep]
-    if (!move) {
+    const next = moves[visualStepRef.current]
+    if (!next) {
       onAnimationEnd?.()
       return
     }
-    api.animateMove(move, 600).then(() => onAnimationEnd?.())
-  }, [animating, moves, playStep, onAnimationEnd])
+    let cancelled = false
+    api.animateMove(next, 600).then(() => {
+      if (cancelled) return
+      visualStepRef.current += 1
+      onAnimationEnd?.()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [animating, moves, onAnimationEnd])
 
-  return <div ref={mountRef} className="h-full w-full" />
+  // Toggle the idle spin.
+  useEffect(() => {
+    apiRef.current?.setAutoRotate(autoRotate)
+  }, [autoRotate])
+
+  return <div ref={mountRef} className="h-full w-full touch-none select-none" />
 }
 
 /** ---- Scene factory ----------------------------------------------------- */
@@ -79,9 +124,6 @@ function createScene(mount: HTMLElement) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 
-  // Pick a non-zero initial size — iOS Safari sometimes reports 0 for the
-  // host element until layout completes, which would leave us with a 0x0
-  // canvas that never recovers if the ResizeObserver fires before paint.
   const measure = () => {
     const r = mount.getBoundingClientRect()
     return {
@@ -94,6 +136,7 @@ function createScene(mount: HTMLElement) {
   renderer.domElement.style.display = 'block'
   renderer.domElement.style.width = '100%'
   renderer.domElement.style.height = '100%'
+  renderer.domElement.style.touchAction = 'none'
   mount.appendChild(renderer.domElement)
 
   const scene = new THREE.Scene()
@@ -107,9 +150,62 @@ function createScene(mount: HTMLElement) {
   scene.add(key)
 
   const cubieGroup = new THREE.Group()
+  // Start at a nicer initial angle so all three visible faces are showing.
+  cubieGroup.rotation.set(-0.35, -0.45, 0)
   scene.add(cubieGroup)
 
   let cubies: Cubie[] = []
+
+  // -------- Manual drag rotation + auto-spin -----------------------------
+
+  let autoSpin = true
+  let dragging = false
+  let lastX = 0
+  let lastY = 0
+
+  const onPointerDown = (e: PointerEvent) => {
+    dragging = true
+    lastX = e.clientX
+    lastY = e.clientY
+    try {
+      renderer.domElement.setPointerCapture(e.pointerId)
+    } catch {
+      // Some browsers (older Safari) throw if the pointer isn't capturable.
+    }
+  }
+  const onPointerMove = (e: PointerEvent) => {
+    if (!dragging) return
+    const dx = e.clientX - lastX
+    const dy = e.clientY - lastY
+    lastX = e.clientX
+    lastY = e.clientY
+    cubieGroup.rotation.y += dx * 0.01
+    cubieGroup.rotation.x += dy * 0.01
+    // Clamp X so the user can't flip the cube upside down accidentally.
+    const limit = Math.PI / 2
+    if (cubieGroup.rotation.x > limit) cubieGroup.rotation.x = limit
+    if (cubieGroup.rotation.x < -limit) cubieGroup.rotation.x = -limit
+  }
+  const onPointerUp = (e: PointerEvent) => {
+    dragging = false
+    try {
+      renderer.domElement.releasePointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+  }
+
+  renderer.domElement.addEventListener('pointerdown', onPointerDown)
+  renderer.domElement.addEventListener('pointermove', onPointerMove)
+  renderer.domElement.addEventListener('pointerup', onPointerUp)
+  renderer.domElement.addEventListener('pointercancel', onPointerUp)
+  renderer.domElement.addEventListener('pointerleave', onPointerUp)
+
+  function setAutoRotate(v: boolean) {
+    autoSpin = v
+  }
+
+  // -------- Scene update / rendering loop -------------------------------
 
   function rebuild(state: CubeState) {
     while (cubieGroup.children.length) cubieGroup.remove(cubieGroup.children[0])
@@ -121,7 +217,6 @@ function createScene(mount: HTMLElement) {
       for (let y = -1; y <= 1; y++) {
         for (let z = -1; z <= 1; z++) {
           const geom = new THREE.BoxGeometry(SIZE, SIZE, SIZE)
-          // Default to a dark plastic core; overwrite outer faces with stickers.
           const materials: THREE.MeshStandardMaterial[] = [
             facelet(colors, 'R', x, y, z),
             facelet(colors, 'L', x, y, z),
@@ -154,7 +249,6 @@ function createScene(mount: HTMLElement) {
     for (const c of [...cubies]) {
       if (c.mesh.parent === pivot) {
         cubieGroup.attach(c.mesh)
-        // Snap rotation + recalc integer grid position.
         snap(c.mesh)
         c.pos.copy(roundVec(c.mesh.position.clone().divideScalar(SIZE + GAP)))
       }
@@ -197,7 +291,7 @@ function createScene(mount: HTMLElement) {
   let raf = 0
   function loop() {
     raf = requestAnimationFrame(loop)
-    cubieGroup.rotation.y += 0.0015
+    if (autoSpin && !dragging) cubieGroup.rotation.y += 0.0015
     renderer.render(scene, camera)
   }
   loop()
@@ -211,8 +305,6 @@ function createScene(mount: HTMLElement) {
     camera.updateProjectionMatrix()
   })
   ro.observe(mount)
-  // Force one more resize after the first paint — iOS Safari sometimes does
-  // not fire the initial ResizeObserver callback in the right phase.
   requestAnimationFrame(() => {
     const next = measure()
     renderer.setSize(next.w, next.h)
@@ -223,11 +315,16 @@ function createScene(mount: HTMLElement) {
   function dispose() {
     cancelAnimationFrame(raf)
     ro.disconnect()
+    renderer.domElement.removeEventListener('pointerdown', onPointerDown)
+    renderer.domElement.removeEventListener('pointermove', onPointerMove)
+    renderer.domElement.removeEventListener('pointerup', onPointerUp)
+    renderer.domElement.removeEventListener('pointercancel', onPointerUp)
+    renderer.domElement.removeEventListener('pointerleave', onPointerUp)
     renderer.dispose()
     if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement)
   }
 
-  return { rebuild, applyMoveInstant, animateMove, dispose }
+  return { rebuild, applyMoveInstant, animateMove, dispose, setAutoRotate }
 }
 
 /** Build a flat array of facelet colours keyed by `${face}:${cellIndex}`. */
@@ -240,10 +337,6 @@ function colorMap(state: CubeState): Map<string, CubeColor> {
   return map
 }
 
-/**
- * Look up the colour for the outer face of cubie (x,y,z). Returns the dark
- * plastic colour for inward-facing sides.
- */
 function facelet(
   colors: Map<string, CubeColor>,
   face: FaceName,
@@ -287,7 +380,6 @@ function facelet(
 }
 
 function moveAxis(move: Move): { axis: 'x' | 'y' | 'z'; layer: number; angle: number } {
-  const sign = move.turns === -1 ? 1 : -1 // visual rotation sign convention
   const ninety = (Math.PI / 2) * (move.turns === 2 ? 2 : 1) * (move.turns === -1 ? 1 : -1)
   switch (move.face) {
     case 'U':
@@ -303,7 +395,7 @@ function moveAxis(move: Move): { axis: 'x' | 'y' | 'z'; layer: number; angle: nu
     case 'B':
       return { axis: 'z', layer: -1, angle: -ninety }
   }
-  return { axis: 'y', layer: 0, angle: 0 * sign }
+  return { axis: 'y', layer: 0, angle: 0 }
 }
 
 function axisIndex(a: 'x' | 'y' | 'z'): 0 | 1 | 2 {
