@@ -25,12 +25,17 @@ function getWorker(): Worker {
     name: 'cube-solver',
   })
   worker.addEventListener('message', (event: MessageEvent) => {
-    const { id, ok, error, ...rest } = event.data
+    const { id, ok, error, code, ...rest } = event.data
     const entry = pending.get(id)
     if (!entry) return
     pending.delete(id)
-    if (ok) entry.resolve(rest)
-    else entry.reject(new Error(error ?? 'Erro no solver'))
+    if (ok) {
+      entry.resolve(rest)
+    } else {
+      const err = new Error(error ?? 'Erro no solver') as Error & { code?: string }
+      err.code = code
+      entry.reject(err)
+    }
   })
   worker.addEventListener('error', (event: ErrorEvent) => {
     const message = event.message || 'Worker do solver falhou'
@@ -79,8 +84,23 @@ export function ensureSolverReady(): Promise<void> {
   return initPromise
 }
 
+export class ImpossibleCubeError extends Error {
+  code = 'impossible'
+  constructor(message: string) {
+    super(message)
+    this.name = 'ImpossibleCubeError'
+  }
+}
+
 export async function solveFacelets(facelets: string): Promise<Move[]> {
-  const { solution } = await call<{ solution: string }>('solve', { facelets })
-  if (!solution) return []
-  return parseMoves(solution)
+  try {
+    const { solution } = await call<{ solution: string }>('solve', { facelets })
+    if (!solution) return []
+    return parseMoves(solution)
+  } catch (err: any) {
+    if (err?.code === 'impossible') {
+      throw new ImpossibleCubeError(err.message ?? 'estado impossível')
+    }
+    throw err
+  }
 }

@@ -4,10 +4,14 @@ import { FacePreview } from '@/components/FacePreview'
 import { ScanProgress } from '@/components/ScanProgress'
 import { Button } from '@/components/Button'
 import { useAppStore } from '@/stores/cubeStore'
-import { SCAN_ORDER } from '@/types/cube'
+import { FACE_LABELS, SCAN_ORDER } from '@/types/cube'
 import type { CubeColor, FaceName, Facelets } from '@/types/cube'
-import { validateCube } from '@/services/cubeValidation/validator'
-import { solveFacelets } from '@/services/cubeSolver/cubeSolver'
+import {
+  impossibleStateResult,
+  validateCube,
+  type ValidationResult,
+} from '@/services/cubeValidation/validator'
+import { ImpossibleCubeError, solveFacelets } from '@/services/cubeSolver/cubeSolver'
 import { useSolverReady } from '@/hooks/useSolverReady'
 
 export function ScannerPage() {
@@ -24,8 +28,7 @@ export function ScannerPage() {
 
   const [cameraOpen, setCameraOpen] = useState(true)
   const [solving, setSolving] = useState(false)
-  const [validationMsg, setValidationMsg] = useState<string | null>(null)
-  const [suspectFaces, setSuspectFaces] = useState<FaceName[]>([])
+  const [error, setError] = useState<ValidationResult | null>(null)
   const solverReady = useSolverReady()
 
   const currentFace: FaceName | null = scanIndex < SCAN_ORDER.length ? SCAN_ORDER[scanIndex] : null
@@ -39,16 +42,22 @@ export function ScannerPage() {
     setFace(face, { face, facelets, hsv })
     advanceScan()
     setCameraOpen(false)
+    setError(null)
+  }
+
+  function retakeFace(face: FaceName) {
+    removeFace(face)
+    setScanIndex(SCAN_ORDER.indexOf(face))
+    setError(null)
+    setCameraOpen(true)
   }
 
   async function handleSolve() {
     setSolving(true)
-    setValidationMsg(null)
-    setSuspectFaces([])
+    setError(null)
     const result = validateCube(cube)
     if (!result.ok || !result.facelets) {
-      setValidationMsg(result.message ?? 'Validação falhou.')
-      setSuspectFaces(result.suspectFaces)
+      setError(result)
       setSolving(false)
       return
     }
@@ -58,8 +67,17 @@ export function ScannerPage() {
       setSolverError(null)
       setRoute('solver')
     } catch (err: any) {
-      setSolverError(err?.message ?? 'Falha ao resolver o cubo.')
-      setValidationMsg('Não foi possível resolver: o estado parece inválido. Recapture as faces suspeitas.')
+      if (err instanceof ImpossibleCubeError) {
+        setError(impossibleStateResult())
+      } else {
+        setError({
+          ok: false,
+          suspectFaces: [],
+          message: err?.message ?? 'Falha ao resolver o cubo.',
+          kind: 'impossible-state',
+        })
+      }
+      setSolverError(err?.message ?? null)
     } finally {
       setSolving(false)
     }
@@ -89,31 +107,25 @@ export function ScannerPage() {
 
       <ScanProgress />
 
-      {validationMsg && (
-        <div className="mt-4 rounded-2xl bg-rose-500/15 p-3 text-sm text-rose-200">
-          {validationMsg}
-          {suspectFaces.length > 0 && (
-            <div className="mt-1 text-xs">Faces a revisar: {suspectFaces.join(', ')}</div>
-          )}
-        </div>
-      )}
+      {error && <ValidationErrorBanner error={error} onRetake={retakeFace} />}
 
       <div className="mt-4 space-y-3">
         {SCAN_ORDER.map((face) => {
           const scanned = cube.faces[face]
           if (!scanned) return null
+          const isSuspect = error?.suspectFaces.includes(face)
           return (
-            <FacePreview
+            <div
               key={face}
-              face={face}
-              facelets={scanned.facelets}
-              onRecolor={(i, c) => recolorCell(face, i, c)}
-              onRetake={() => {
-                removeFace(face)
-                setScanIndex(SCAN_ORDER.indexOf(face))
-                setCameraOpen(true)
-              }}
-            />
+              className={isSuspect ? 'rounded-2xl ring-2 ring-rose-400/70' : undefined}
+            >
+              <FacePreview
+                face={face}
+                facelets={scanned.facelets}
+                onRecolor={(i, c) => recolorCell(face, i, c)}
+                onRetake={() => retakeFace(face)}
+              />
+            </div>
           )
         })}
       </div>
@@ -147,6 +159,50 @@ export function ScannerPage() {
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+interface BannerProps {
+  error: ValidationResult
+  onRetake: (face: FaceName) => void
+}
+
+function ValidationErrorBanner({ error, onRetake }: BannerProps) {
+  const headline =
+    error.kind === 'impossible-state'
+      ? '❌ Cubo impossível'
+      : error.kind === 'color-count'
+        ? '⚠ Cores inconsistentes'
+        : error.kind === 'duplicate-centres'
+          ? '⚠ Centros duplicados'
+          : '⚠ Algo está errado'
+
+  return (
+    <div className="mt-4 rounded-2xl border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-100">
+      <div className="font-semibold">{headline}</div>
+      <p className="mt-1 text-rose-200/90">{error.message}</p>
+      {error.details && (
+        <p className="mt-1 font-mono text-xs text-rose-200/80">{error.details}</p>
+      )}
+      {error.suspectFaces.length > 0 && (
+        <div className="mt-3">
+          <div className="text-xs uppercase tracking-wide text-rose-200/70">
+            Recapture as faces suspeitas:
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {error.suspectFaces.map((face) => (
+              <button
+                key={face}
+                onClick={() => onRetake(face)}
+                className="rounded-lg bg-rose-600/30 px-3 py-1.5 text-xs font-medium text-rose-50 hover:bg-rose-600/50"
+              >
+                ↻ {face} · {FACE_LABELS[face]}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
